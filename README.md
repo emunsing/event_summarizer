@@ -1,6 +1,8 @@
 # Event(brite) Summarizer
 
-Tool for summarizing Eventbrite events for inclusion in event calendars.  Takes in a URL and a generic prompt, which are fed into a Large Language Model (in this case OpenAI) along with the event scrapes the title, subtitle, and event details  
+Tool for summarizing Eventbrite events for inclusion in event calendars.  Takes in a URL and a generic prompt, which are fed into a Large Language Model (in this case OpenAI) along with the event scrapes the title, subtitle, and event details.
+
+Originally created for http://sf.funcheap.com 
 
 Environment Requirements:
 - Python 3.10
@@ -17,9 +19,8 @@ These inputs (title, subtitle, details) are combined and fed in along with the p
 
 # TODO:
 
-[ ] Handle Facebook events
-[ ] Handle errors - will currently error gracelessly on expired events 
-[ ] Meaningfully use feedback / integrate with Weights & Biases
-[ ] Allow auto-regeneration of text if output does not meet expectation (exclusion characters, etc)
-[ ] Dropdown for model type
-
+- [ ] Handle Facebook events
+- [ ] Handle errors - will currently error gracelessly on expired events 
+- [ ] Meaningfully use feedback / integrate with Weights & Biases
+- [ ] Allow auto-regeneration of text if output does not meet expectation (exclusion characters, etc)
+- [ ] Dropdown for model type
