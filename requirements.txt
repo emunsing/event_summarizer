@@ -1,0 +1,4 @@
+beautifulsoup4
+gradio
+openai
+langchain>=0.0.177
