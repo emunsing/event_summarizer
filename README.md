@@ -1,3 +1,13 @@
+---
+title: Event Summarizer
+emoji: 
+sdk: gradio
+sdk_version: 3.32.0
+python_version: 3.10.0
+app_file: app.py
+pinned: false
+---
+
 # Event(brite) Summarizer
 
 Tool for summarizing Eventbrite events for inclusion in event calendars.  Takes in a URL and a generic prompt, which are fed into a Large Language Model (in this case OpenAI) along with the event scrapes the title, subtitle, and event details.
