@@ -2,10 +2,26 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import os
+from collections import OrderedDict
 
 from langchain.llms import OpenAI
+from langchain.chat_models import ChatOpenAI
+from langchain.prompts.chat import (
+    ChatPromptTemplate,
+    SystemMessagePromptTemplate,
+    AIMessagePromptTemplate,
+    HumanMessagePromptTemplate,
+)
+from langchain.schema import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage
+)
+
 from langchain.prompts import PromptTemplate
 
+
+NULLIFY_STRINGS = ['\n', '–\xa0']
 
 EVENTBRITE_API_KEY = os.environ['EVENTBRITE_API_KEY']
 
@@ -34,8 +50,20 @@ def get_title_subtitle_from_event(event_url):
     
     return title, subtitle
 
-def get_eventbrite_json(event_url):
-    event_id = get_event_id(event_url)
+def get_eventbrite_json(event_id):
+    headers = {'Authorization': 'Bearer {}'.format(EVENTBRITE_API_KEY)}
+    params = {}
+
+    base_url = "https://www.eventbriteapi.com/v3/events/{id}?expand=ticket_classes"
+
+    r = requests.get(base_url.format(id=event_id), headers=headers, params=params)
+    effective_encoding =  'utf-8-sig' #r.apparent_encoding  #
+    r.encoding = effective_encoding
+
+    return json.loads(r.text)
+
+
+def get_eventbrite_structured_content(event_id):
     headers = {'Authorization': 'Bearer {}'.format(EVENTBRITE_API_KEY)}
     params = {}
 
@@ -47,9 +75,30 @@ def get_eventbrite_json(event_url):
 
     return json.loads(r.text)
 
-def get_event_details(event_json):
-    # Now get details:
+def get_venue_details(venue_id):
+    headers = {'Authorization': 'Bearer {}'.format(EVENTBRITE_API_KEY)}
+    params = {}
 
+    base_url = "https://www.eventbriteapi.com/v3/venues/{venue_id}"
+
+    r = requests.get(base_url.format(venue_id=venue_id), headers=headers, params=params)
+    effective_encoding =  'utf-8-sig' #r.apparent_encoding  #
+    r.encoding = effective_encoding
+    venue_json = json.loads(r.text)
+
+    venue_details = {}
+    venue_details['venue_name'] = venue_json.get('name', '')
+
+    if 'address' in venue_json:
+        venue_details['venue_address'] = venue_json['address'].get('localized_address_display', '')
+    else:
+        venue_details['venue_address'] = ''
+
+    return venue_details
+
+
+def get_event_details(event_json):
+    # Parse the structured content:
     content = event_json['modules'][0]['data']['body']['text']
     content = content.replace('\ufeff', '')  # Remove byte order mark for utf-8-sig decoding.
 
@@ -58,45 +107,102 @@ def get_event_details(event_json):
     details = soup.get_text(separator=' ')
     return details
 
-def get_eventbrite_summary(event_url, top_level_prompt_stub, error_handling='attempt', modeltype="text-davinci-003", temperature=0.3):
+
+def parse_ticket_prices(ticket_json):
+    ticket_prices = {}
+
+    for t in ticket_json:
+        if t['free']:
+            ticket_prices[t['name']] = 0
+            continue
+        else:
+            cost = t['cost']
+            if cost is not None:
+                ticket_prices[t['name']] = float(cost['major_value'])
+    return ticket_prices
+
+
+def get_full_event_info(event_url):
+
+    full_event_info = OrderedDict()
+    event_id = get_event_id(event_url)
+    
+
+    event_json = get_eventbrite_json(event_id)
+    full_event_info['title'] = event_json['name']['text']
+    full_event_info['subtitle'] = event_json['summary']
+    full_event_info['url'] = event_url
+    full_event_info['timezone'] = event_json['start']['timezone']
+    full_event_info['start_time'] = event_json['start']['local']
+    full_event_info['end_time'] = event_json['end']['local']
+
+    try:
+        raw_ticket_prices = parse_ticket_prices(event_json['ticket_classes'])
+        full_event_info['free'] = min(raw_ticket_prices.values()) == 0
+        full_event_info['tickets'] = '\n'.join([f'{k}: ${v:.02f}' for k, v in raw_ticket_prices.items()])
+    except AttributeError as e:
+        print("Error while parsing ticket prices")
+        print(e)
+        full_event_info['free'] = event_json['is_free']
+        full_event_info['tickets'] = 'See event site for tickets'
+
+    # The venue detail getter handles issues internally
+    venue_details = get_venue_details(event_json['venue_id'])
+    full_event_info.update(venue_details)
+
+    try:
+        structured_content = get_eventbrite_structured_content(event_id)
+        full_event_info['description'] = get_event_details(structured_content)
+    except IndexError as e:
+        print("Error while parsing venue info")
+        print(e)
+        full_event_info['description'] = ''
+        
+    return full_event_info
+
+
+def summarize_event(event_info_dict, prompt, modeltype="text-davinci-003", temperature=0.3):
+    if 'gpt' in modeltype:
+        llm = ChatOpenAI(model_name=modeltype, temperature=temperature)
+        messages = [
+            # SystemMessage(content="You are an excellent journalist working for a fun publication targeting young professionals and young families."),
+            HumanMessage(content=prompt.format(**event_info_dict))
+        ]
+        res = llm(messages).content
+
+    else:
+        llm = OpenAI(model_name=modeltype, temperature=temperature)
+        res = llm(prompt.format(**event_info_dict))
+
+    output_lines = res.strip().replace('\n\n','\n').split('\n')
+
+    leader = output_lines[0]
+    assert("Leader: ") in leader
+    leader = leader.replace("Leader: ","")
+
+    summary = ' '.join(output_lines[1:])
+    assert("Summary: ") in summary
+    summary = summary.replace("Summary: ","")
+    
+    return leader, summary
+
+def get_eventbrite_summary(event_url, prompt, modeltype="text-davinci-003", temperature=0.3):
     """
     error_handling in "skip", "attempt", 
     """
-    errors = []
 
-    try:
-        title, subtitle = get_title_subtitle_from_event(event_url)
-    except AttributeError as e:
-        errors.append(e)
-        print(e)
-        title, subtitle = '', ''
+    event_info_dict = get_full_event_info(event_url)
+    leader, summary = summarize_event(event_info_dict, prompt, modeltype, temperature)
+    event_info_dict['leader_line'] = leader
+    event_info_dict['summary'] = summary
 
-    try:        
-        event_json = get_eventbrite_json(event_url)
-        details = get_event_details(event_json)
-    except AttributeError as e:
-        errors.append(e)
-        print(e)
-        details = ''
+    return event_info_dict
 
-    if errors and error_handling=='skip':
-        return 'Error'
+def get_multiple_event_info(event_url_list, prompt, modeltype="text-davinci-003", temperature=0.3):
+    res = {}
+
+    for i, url in enumerate(event_url_list):
+        print(url)
+        res[i] = get_eventbrite_summary(url, prompt, modeltype=modeltype, temperature=temperature)
     
-    openai_modeltype = modeltype
-
-    top_level_prompt = top_level_prompt_stub + """
-    Event Title:{title}
-    Event Subtitle: {subtitle}
-    Event Description:
-    {description}"""
-    
-    prompt = PromptTemplate(
-        input_variables=['title', 'subtitle', 'description'],
-        template=top_level_prompt,
-    )
-
-    chat_prompt = prompt.format_prompt(title=title, subtitle=subtitle, description=details)
-
-    llm = OpenAI(model_name=openai_modeltype, temperature=temperature)
-    res = llm(chat_prompt.to_messages()[0].content)
-    return res.strip()
+    return res
